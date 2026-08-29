@@ -76,6 +76,7 @@ export default function ClientApp() {
     return () => ctrl.abort();
   }, [query, genre]);
   React.useEffect(() => { fetch('/api/auth/profile/', { credentials: 'include' }).then((r) => r.ok ? r.json() : null).then((d) => { if (d) { setUser(d); setForm((v) => ({ ...v, ...d, password: '' })); } }).catch(() => {}); }, []);
+  React.useEffect(() => { fetch('/api/auth/status/', { credentials: 'include' }).catch(() => {}); }, []);
 
   const change = (field: string) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((v) => ({ ...v, [field]: e.target.value }));
   const openAuth = (mode: 'login' | 'register' = 'login') => { setAuthMode(mode); setVerificationStep(false); setVerificationCode(''); setMessage(''); setModal('auth'); };
@@ -98,7 +99,9 @@ export default function ClientApp() {
     const body = verificationStep ? { email: form.email, code: verificationCode } : form;
     try {
       const r = await fetch(`/api/auth/${endpoint}/`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() }, body: JSON.stringify(body) });
-      const d = await r.json();
+      const raw = await r.text();
+      let d: any = {};
+      try { d = raw ? JSON.parse(raw) : {}; } catch { throw new Error(`Server error (${r.status}). Please try again.`); }
       if (!r.ok) throw new Error(d.detail || Object.values(d).flat().join(' '));
       if (d.verification_required) { setVerificationStep(true); setMessage(''); return; }
       setUser(d); setForm((v) => ({ ...v, ...d, password: '' })); setModal(null); setVerificationStep(false);
