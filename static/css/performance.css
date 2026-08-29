@@ -14,6 +14,9 @@ html[data-theme='light'] body::before {
   transform: none !important;
   will-change: auto !important;
 }
+html[data-theme='light'] .archive-app {
+  background: rgba(235,244,243,.48) !important;
+}
 
 /* Dark mode surfaces: black glass instead of the white translucent overlay. */
 html[data-theme='dark'] :is(.archive-app,.sidebar,.panel,.message-shell,.hero-panel,.library-hero,.profile-cover,.profile-form,.profile-summary,.setting-panel,.circle-card,.collection-card,.alert-row,.continue-panel,.mini-stat,.top-search,.language-select,.bell-button,.login-button,.primary-button,.profile-button,.wide-search,.sort-select,.filter-chip,.auth-modal,.book-modal,.book-modal-actions,.form-grid input,.form-grid textarea,.auth-modal input,.message-composer input,.setting-select select,.theme-picker>div,.quiz-cover,.quiz-options button,.cover-emoji,.cover-button,.save-button,.round-save,.conversation-list,.bubble.incoming,.bubble.outgoing,.random-picker,.result-card,.roulette-book,.roulette-controls button){
