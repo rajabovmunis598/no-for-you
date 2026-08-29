@@ -7,7 +7,7 @@ html[data-theme='light'] body::before {
   z-index: -5;
   inset: 0;
   pointer-events: none;
-  background: url('/static/images/image.png?v=2') center/cover no-repeat !important;
+  background: url('/static/images/light%20mode.webp?v=3') center/cover no-repeat !important;
   opacity: 1 !important;
   filter: none !important;
   animation: none !important;
