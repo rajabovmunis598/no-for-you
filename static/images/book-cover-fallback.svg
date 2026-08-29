@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 900" role="img" aria-label="Digital Archive book cover">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0b3140"/><stop offset="1" stop-color="#13193f"/></linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#5de6d4"/><stop offset="1" stop-color="#6db9ec"/></linearGradient>
+  </defs>
+  <rect width="600" height="900" rx="28" fill="url(#bg)"/>
+  <circle cx="510" cy="100" r="180" fill="#5de6d4" opacity=".12"/>
+  <circle cx="90" cy="790" r="220" fill="#8d79d8" opacity=".16"/>
+  <rect x="58" y="58" width="484" height="784" rx="20" fill="none" stroke="#a6f7ed" stroke-opacity=".42"/>
+  <path d="M155 270h290v300H155zM195 270v300M238 345h150M238 402h130M238 459h150" fill="none" stroke="url(#line)" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="300" y="665" fill="#efffff" font-family="Arial, sans-serif" font-size="31" font-weight="700" text-anchor="middle">DIGITAL ARCHIVE</text>
+  <text x="300" y="710" fill="#9bc6ca" font-family="Arial, sans-serif" font-size="19" letter-spacing="5" text-anchor="middle">BOOK COVER</text>
+</svg>

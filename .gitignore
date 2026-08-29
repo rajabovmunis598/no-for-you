@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.py[cod]
+db.sqlite3
+media/
+\.venv/
+venv/
+archive-web/node_modules/
+archive-web/.next/
+archive-web/out/
+node_modules/
+*.log
+*.sqlite3
+*.py[cod]
+__pycache__/
+# Local-only large assets and caches
+nul

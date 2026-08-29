@@ -1,0 +1,11 @@
+.git
+.venv
+archive-web/node_modules
+archive-web/.next
+__pycache__
+*.py[cod]
+.env
+db.sqlite3
+media
+staticfiles
+*.log

@@ -1,0 +1,43 @@
+{% load static %}
+<!doctype html>
+<html lang="tg">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Digital Archive</title>
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  <link rel="stylesheet" href="{% static 'css/fullscreen.css' %}">
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-mark">◖</div>
+      <nav class="side-nav">
+        <button class="side-link active" data-genre="" title="Ҳама">⌂</button>
+        <button class="side-link" data-genre="Роман" title="Роман">▤</button>
+        <button class="side-link" data-genre="Детектив" title="Детектив">♧</button>
+        <button class="side-link" data-genre="Фантастика" title="Фантастика">♢</button>
+        <button class="side-link" data-genre="Адабиёт" title="Адабиёт">ⓘ</button>
+        <button class="side-link" data-genre="" title="Танзимот">⚙</button>
+      </nav>
+      <div class="profile">●</div>
+    </aside>
+
+    <section class="content">
+      <header class="topbar">
+        <div class="eyebrow">DIGITAL LIBRARY <span>· 1980s interface</span></div>
+        <div class="top-actions">
+          <label class="search"><input id="search" type="search" placeholder="Search"><span>⌕</span></label>
+          <button class="menu" aria-label="Menu">≡</button>
+        </div>
+      </header>
+      <div class="title-row"><h2>DIGITAL ARCHIVE</h2><div class="dots">•••••</div></div>
+      <div id="book-stage" class="book-stage"></div>
+      <div class="stage-controls"><button id="prev">‹</button><span id="counter">01 / 12</span><button id="next">›</button></div>
+      <div class="bottom-row"><button class="primary" id="addBook">GET STARTED</button><button class="secondary">EXPLORE</button></div>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="{% static 'js/app.js' %}"></script>
+</body>
+</html>
