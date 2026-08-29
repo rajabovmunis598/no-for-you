@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Icon } from '../shared/Icon';
+import { csrfFetch, readApiResponse } from '../../lib/api';
 
 interface Props { currentUser?: any; }
 
@@ -19,18 +19,24 @@ export function LiveMessagesPage({ currentUser }: Props) {
   const historyRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
-    fetch('/api/users/', { credentials: 'include' }).then((r) => r.json()).then((d) => setUsers(d.results || d)).catch(() => {}).finally(() => setLoading(false));
+    fetch('/api/users/', { credentials: 'include', headers: { Accept: 'application/json' } })
+      .then(readApiResponse)
+      .then((data) => setUsers(Array.isArray(data) ? data : data?.results || []))
+      .catch((reason) => setError(reason?.message || 'Readers could not be loaded.'))
+      .finally(() => setLoading(false));
   }, []);
 
   const loadMessages = React.useCallback(async (id: number) => {
-    const data = await fetch(`/api/chats/${id}/messages/`, { credentials: 'include' }).then((r) => r.json());
-    setMessages(data.results || data);
+    const response = await fetch(`/api/chats/${id}/messages/`, { credentials: 'include', headers: { Accept: 'application/json' } });
+    const data = await readApiResponse(response);
+    setMessages(Array.isArray(data) ? data : data?.results || []);
   }, []);
 
   const selectUser = async (user: any) => {
     setSelectedUser(user); setError(''); setMessages([]);
     try {
-      const nextChat = await fetch(`/api/users/${user.id}/chat/`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then((r) => r.json());
+      const response = await csrfFetch(`/api/users/${user.id}/chat/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const nextChat = await readApiResponse(response);
       setChat(nextChat); await loadMessages(nextChat.id);
     } catch (e: any) { setError(e.message); }
   };
@@ -44,7 +50,8 @@ export function LiveMessagesPage({ currentUser }: Props) {
     if (!text || !chat?.id) return;
     setDraft('');
     try {
-      const m = await fetch(`/api/chats/${chat.id}/messages/`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '' }, body: JSON.stringify({ text }) }).then((r) => r.json());
+      const response = await csrfFetch(`/api/chats/${chat.id}/messages/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+      const m = await readApiResponse(response);
       setMessages((items) => [...items, m]);
     } catch (e: any) { setDraft(text); setError(e.message); }
   };

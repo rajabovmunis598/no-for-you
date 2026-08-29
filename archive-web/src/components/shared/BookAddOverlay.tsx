@@ -1,9 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Icon } from './Icon';
-
-const csrf = () => decodeURIComponent(document.cookie.split('; ').find((i) => i.startsWith('csrftoken='))?.split('=')[1] || '');
+import { csrfFetch, readApiResponse } from '../../lib/api';
 
 interface Props {
   open: boolean;
@@ -26,13 +24,16 @@ export function BookAddOverlay({ open, onClose, onAdded }: Props) {
     const form = formRef.current;
     if (!form) return;
     setOutput('Publishing…');
-    const res = await fetch('/api/books/', { method: 'POST', credentials: 'include', headers: { 'X-CSRFToken': csrf() }, body: new FormData(form) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { setOutput((data.detail as string) || Object.values(data).flat().join(' ')); return; }
-    setOutput('Book added successfully.');
-    form.reset();
-    onAdded?.();
-    setTimeout(onClose, 650);
+    try {
+      const response = await csrfFetch('/api/books/', { method: 'POST', body: new FormData(form) });
+      await readApiResponse(response);
+      setOutput('Book added successfully.');
+      form.reset();
+      onAdded?.();
+      setTimeout(onClose, 650);
+    } catch (error: any) {
+      setOutput(error?.message || 'The book could not be published.');
+    }
   };
 
   return (

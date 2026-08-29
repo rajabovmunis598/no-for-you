@@ -8,9 +8,11 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       DB_PATH: /app/data/db.sqlite3
     volumes:
-      - media_data:/app/media
-      - static_data:/app/staticfiles
-      - db_data:/app/data
+      - ./media:/app/media
+      - ./runtime/staticfiles:/app/staticfiles
+      - ./runtime/data:/app/data
+    ports:
+      - "127.0.0.1:8000:8000"
     depends_on:
       - redis
     restart: unless-stopped
@@ -28,9 +30,6 @@ services:
 
   redis:
     image: redis:7-alpine
+    volumes:
+      - ./runtime/redis:/data
     restart: unless-stopped
-
-volumes:
-  media_data:
-  static_data:
-  db_data:

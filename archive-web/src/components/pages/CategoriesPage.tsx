@@ -3,9 +3,11 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { Icon } from '../shared/Icon';
-import { categories } from '../shared/constants';
+import { EmptyState } from '../shared/EmptyState';
+import { bookCategory } from '../shared/constants';
 
 interface CategoriesPageProps {
+  books: any[];
   onCategory: (category: string) => void;
 }
 
@@ -18,7 +20,13 @@ const collectionIcons: Record<string, string> = {
   philosophy: 'users',
 };
 
-export function CategoriesPage({ onCategory }: CategoriesPageProps) {
+export function CategoriesPage({ books, onCategory }: CategoriesPageProps) {
+  const categoryCounts = new Map<string, number>();
+  books.forEach((book) => {
+    const name = bookCategory(book);
+    categoryCounts.set(name, (categoryCounts.get(name) || 0) + 1);
+  });
+  const categories = Array.from(categoryCounts.entries());
   return (
     <div className="page-content">
       <section className="page-intro">
@@ -27,9 +35,9 @@ export function CategoriesPage({ onCategory }: CategoriesPageProps) {
         <p>Dive into curated collections spanning timeless classics, cutting-edge science, and everything in between.</p>
       </section>
       <div className="collection-grid">
-        {categories.map((item, index) => {
-          const [name, description, count, key] = item;
-          const icon = collectionIcons[key] || 'book';
+        {categories.map(([name, count], index) => {
+          const key = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+          const icon = collectionIcons[key] || (index % 3 === 1 ? 'sparkles' : 'book');
           return (
             <motion.button
               key={key}
@@ -39,14 +47,14 @@ export function CategoriesPage({ onCategory }: CategoriesPageProps) {
               whileHover={{ scale: 1.03 }}
               whileTap={{ scale: 0.98 }}
               transition={{ duration: 0.28, delay: index * 0.04 }}
-              onClick={() => onCategory(key)}
+              onClick={() => onCategory(name)}
             >
               <span className="collection-icon">
                 <Icon name={icon} size={24} />
               </span>
               <div className="collection-name">{name}</div>
-              <div className="collection-description">{description}</div>
-              <div className="collection-count">{count}</div>
+              <div className="collection-description">Browse every book filed under {name.toLowerCase()}.</div>
+              <div className="collection-count">{count} book{count === 1 ? '' : 's'}</div>
               <span className="collection-arrow">
                 <Icon name="arrow" size={17} />
               </span>
@@ -54,6 +62,7 @@ export function CategoriesPage({ onCategory }: CategoriesPageProps) {
           );
         })}
       </div>
+      {!categories.length && <EmptyState icon="grid" title="No collections yet" text="Collections appear automatically when books are added." />}
     </div>
   );
 }

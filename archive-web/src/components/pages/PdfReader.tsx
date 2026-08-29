@@ -8,9 +8,9 @@ function PageImage({ bookId, pageNumber, thumbnail = false }: { bookId: number; 
   return <img src={`/api/books/${bookId}/page/?page=${pageNumber}&scale=${scale}`} className={thumbnail ? 'pdf-thumb-canvas' : 'pdf-page-canvas'} alt={`Page ${pageNumber}`} loading={thumbnail ? 'lazy' : 'eager'} />;
 }
 
-interface Props { book: any; onClose: () => void; }
+interface Props { book: any; onClose: () => void; onProgress?: (book: any, page: number, totalPages: number) => void; }
 
-export function PdfReader({ book, onClose }: Props) {
+export function PdfReader({ book, onClose, onProgress }: Props) {
   const shellRef = React.useRef<HTMLDivElement>(null);
   const [totalPages, setTotalPages] = React.useState(0);
   const [page, setPage] = React.useState(1);
@@ -36,6 +36,12 @@ export function PdfReader({ book, onClose }: Props) {
     })();
     return () => { cancelled = true; };
   }, [file, bookId]);
+
+  React.useEffect(() => {
+    if (!totalPages || !onProgress) return;
+    const timer = window.setTimeout(() => onProgress(book, page, totalPages), 650);
+    return () => window.clearTimeout(timer);
+  }, [book, page, totalPages, onProgress]);
 
   const normalizePage = React.useCallback((n: number) => { const b = Math.max(1, Math.min(totalPages || 1, Number(n) || 1)); return b === 1 ? 1 : b % 2 === 0 ? b : b - 1; }, [totalPages]);
   const goTo = React.useCallback((n: number) => { const t = normalizePage(n); setDirection(t >= page ? 1 : -1); setPage(t); }, [normalizePage, page]);

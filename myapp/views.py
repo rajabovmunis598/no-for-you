@@ -8,19 +8,22 @@ except ImportError:  # Optional locally; production installs PyMuPDF from requir
     fitz = None
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.middleware.csrf import get_token
 from django.shortcuts import get_object_or_404
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, parser_classes, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import (
@@ -50,13 +53,20 @@ def send_code(user, model, subject, body):
     send_mail(subject, body.format(code=code), None, [user.email], fail_silently=False)
 
 
+def csrf_failure(request, reason=''):
+    """Return JSON for API CSRF failures so clients never try to parse HTML."""
+    return JsonResponse({'detail': 'CSRF verification failed. Refresh the page and try again.'}, status=403)
+
+
 class BookViewSet(viewsets.ModelViewSet):
     serializer_class = BookSerializer
     search_fields = ['title', 'author', 'author_record__name', 'description', 'genre', 'isbn', 'publication_year', 'published_year']
     ordering_fields = ['title', 'author', 'published_year', 'publication_year', 'rating', 'created_at']
 
     def get_permissions(self):
-        return [AllowAny()] if self.action in ('list', 'retrieve', 'similar') else [IsAuthenticated()]
+        public_actions = ('list', 'retrieve', 'similar', 'page_image')
+        public_read = self.action in ('reviews', 'comments') and self.request.method == 'GET'
+        return [AllowAny()] if self.action in public_actions or public_read else [IsAuthenticated()]
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
@@ -74,7 +84,7 @@ class BookViewSet(viewsets.ModelViewSet):
         instance.delete()
 
     def get_queryset(self):
-        qs = Book.objects.select_related('author_record', 'category').all()
+        qs = Book.objects.select_related('author_record', 'category', 'created_by', 'created_by__profile').all()
         params = self.request.query_params
         for field in ('genre', 'author', 'published_year', 'publication_year', 'language'):
             if params.get(field):
@@ -88,25 +98,31 @@ class BookViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def similar(self, request, pk=None):
         book = self.get_object()
-        qs = Book.objects.exclude(pk=book.pk).filter(Q(category=book.category) | Q(genre__iexact=book.genre)).order_by('-rating', '-created_at')[:8]
+        related = Q(genre__iexact=book.genre)
+        if book.category_id:
+            related |= Q(category_id=book.category_id)
+        qs = Book.objects.exclude(pk=book.pk).filter(related).order_by('-rating', '-created_at')[:8]
         return Response(BookSerializer(qs, many=True, context={'request': request}).data)
 
     @action(detail=True, methods=['get'], url_path='page')
     def page_image(self, request, pk=None):
         """Render one PDF page on the server; browsers receive only a PNG."""
-        if fitz is None:
-            return Response({'detail': 'Server PDF rendering is not installed.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         book = self.get_object()
         extra = book.files.order_by('id').first()
         source = book.book_file or (extra.file if extra else None)
         if not source:
             return Response({'detail': 'PDF file is missing.'}, status=status.HTTP_404_NOT_FOUND)
+        if not source.name.lower().endswith('.pdf'):
+            return Response({'detail': 'Page preview is available only for PDF files.'}, status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+        if fitz is None:
+            return Response({'detail': 'Server PDF rendering is not installed.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         try:
             page_number = max(1, int(request.query_params.get('page', '1')))
             scale = min(2.0, max(0.7, float(request.query_params.get('scale', '1.25'))))
         except (TypeError, ValueError):
             return Response({'detail': 'Invalid page or scale.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
+            source.open('rb')
             with fitz.open(stream=source.read(), filetype='pdf') as document:
                 if page_number > document.page_count:
                     return Response({'detail': 'Page is out of range.'}, status=status.HTTP_404_NOT_FOUND)
@@ -115,6 +131,8 @@ class BookViewSet(viewsets.ModelViewSet):
                 total_pages = document.page_count
         except Exception:
             return Response({'detail': 'Could not render this PDF.'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        finally:
+            source.close()
         response = HttpResponse(payload, content_type='image/png')
         response['X-PDF-Page-Count'] = str(total_pages)
         response['Cache-Control'] = 'public, max-age=3600'
@@ -172,6 +190,13 @@ class FavoriteViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.Des
     def get_queryset(self): return Favorite.objects.filter(user=self.request.user).select_related('book')
     def perform_create(self, serializer): serializer.save(user=self.request.user)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        favorite, created = Favorite.objects.get_or_create(user=request.user, book=serializer.validated_data['book'])
+        payload = self.get_serializer(favorite).data
+        return Response(payload, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
 
 class ReadingViewSet(viewsets.GenericViewSet):
     serializer_class = ReadingProgressSerializer
@@ -183,10 +208,14 @@ class ReadingViewSet(viewsets.GenericViewSet):
         book_id = request.data.get('book') or request.data.get('book_id')
         book = get_object_or_404(Book, pk=book_id)
         progress, _ = ReadingProgress.objects.get_or_create(user=request.user, book=book)
-        for field in ('current_page', 'progress_percent'):
-            if field in request.data:
-                setattr(progress, field, request.data[field])
-        progress.save()
+        payload = {
+            field: request.data[field]
+            for field in ('current_page', 'progress_percent')
+            if field in request.data
+        }
+        serializer = ReadingProgressSerializer(progress, data=payload, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        progress = serializer.save()
         ReadingHistory.objects.update_or_create(user=request.user, book=book, defaults={'progress_percent': progress.progress_percent, 'last_read_at': timezone.now()})
         return Response(ReadingProgressSerializer(progress, context={'request': request}).data)
 
@@ -200,7 +229,10 @@ class ReadingViewSet(viewsets.GenericViewSet):
         if request.method == 'GET':
             return Response(BookmarkSerializer(Bookmark.objects.filter(user=request.user), many=True).data)
         if request.method == 'DELETE':
-            Bookmark.objects.filter(user=request.user, pk=request.data.get('id')).delete()
+            bookmark_id = request.data.get('id')
+            if not bookmark_id:
+                raise ValidationError({'id': 'Bookmark id is required.'})
+            Bookmark.objects.filter(user=request.user, pk=bookmark_id).delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
         serializer = BookmarkSerializer(data=request.data); serializer.is_valid(raise_exception=True); serializer.save(user=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -211,10 +243,19 @@ class ChatViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     def get_queryset(self): return Chat.objects.filter(members__user=self.request.user).distinct()
     def perform_create(self, serializer):
-        chat = serializer.save()
-        ChatMember.objects.get_or_create(chat=chat, user=self.request.user)
-        for user_id in self.request.data.get('member_ids', []):
-            ChatMember.objects.get_or_create(chat=chat, user_id=user_id)
+        member_ids = self.request.data.get('member_ids', [])
+        if not isinstance(member_ids, list):
+            raise ValidationError({'member_ids': 'Expected a list of user ids.'})
+        member_ids = {str(user_id) for user_id in member_ids if str(user_id) != str(self.request.user.id)}
+        members = list(User.objects.filter(pk__in=member_ids, is_active=True))
+        if len(members) != len(member_ids):
+            raise ValidationError({'member_ids': 'One or more users do not exist.'})
+        if self.request.data.get('type', Chat.ChatType.PRIVATE) == Chat.ChatType.PRIVATE and len(members) > 1:
+            raise ValidationError({'member_ids': 'A private chat can contain only two users.'})
+        with transaction.atomic():
+            chat = serializer.save()
+            ChatMember.objects.create(chat=chat, user=self.request.user)
+            ChatMember.objects.bulk_create([ChatMember(chat=chat, user=user) for user in members])
 
     @action(detail=True, methods=['get', 'post'], url_path='messages')
     def messages(self, request, pk=None):
@@ -254,20 +295,35 @@ class GroupViewSet(viewsets.ModelViewSet):
 
     def is_admin(self, group): return group.owner_id == self.request.user.id or group.members.filter(user=self.request.user, role=GroupMember.Role.ADMIN).exists()
 
+    def perform_update(self, serializer):
+        if not self.is_admin(self.get_object()):
+            raise PermissionDenied('Group admin permission required.')
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if not self.is_admin(instance):
+            raise PermissionDenied('Group admin permission required.')
+        instance.delete()
+
     @action(detail=True, methods=['get', 'post', 'delete'], url_path='members')
     def members(self, request, pk=None):
         group = self.get_object()
         if request.method == 'GET': return Response(GroupMemberSerializer(group.members.all(), many=True, context={'request': request}).data)
         if not self.is_admin(group): return Response({'detail': 'Group admin permission required.'}, status=status.HTTP_403_FORBIDDEN)
         user_id = request.data.get('user_id')
-        if request.method == 'DELETE': GroupMember.objects.filter(group=group, user_id=user_id).delete(); return Response(status=status.HTTP_204_NO_CONTENT)
-        member, _ = GroupMember.objects.get_or_create(group=group, user_id=user_id)
+        user = get_object_or_404(User, pk=user_id, is_active=True)
+        if request.method == 'DELETE':
+            if user.id == group.owner_id:
+                return Response({'detail': 'The group owner cannot be removed.'}, status=status.HTTP_400_BAD_REQUEST)
+            GroupMember.objects.filter(group=group, user=user).delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        member, _ = GroupMember.objects.get_or_create(group=group, user=user)
         return Response(GroupMemberSerializer(member, context={'request': request}).data)
 
     @action(detail=True, methods=['get', 'post'], url_path='messages')
     def messages(self, request, pk=None):
         group = self.get_object()
-        if not group.members.filter(user=request.user).exists(): return Response({'detail': 'Join the group first.'}, status=status.HTTP_403_FORBIDDEN)
+        if group.owner_id != request.user.id and not group.members.filter(user=request.user).exists(): return Response({'detail': 'Join the group first.'}, status=status.HTTP_403_FORBIDDEN)
         if request.method == 'GET': return Response(GroupMessageSerializer(group.messages.all(), many=True, context={'request': request}).data)
         serializer = GroupMessageSerializer(data=request.data); serializer.is_valid(raise_exception=True); serializer.save(group=group, sender=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -289,10 +345,18 @@ class CallViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer): serializer.save(caller=self.request.user)
     @action(detail=True, methods=['post'])
     def accept(self, request, pk=None):
-        call = self.get_object(); call.status = Call.Status.ACCEPTED; call.started_at = timezone.now(); call.save(); return Response(CallSerializer(call, context={'request': request}).data)
+        call = self.get_object()
+        if call.receiver_id != request.user.id:
+            raise PermissionDenied('Only the receiver can accept this call.')
+        if call.status != Call.Status.RINGING:
+            raise ValidationError({'detail': 'Only a ringing call can be accepted.'})
+        call.status = Call.Status.ACCEPTED; call.started_at = timezone.now(); call.save(update_fields=['status', 'started_at']); return Response(CallSerializer(call, context={'request': request}).data)
     @action(detail=True, methods=['post'])
     def end(self, request, pk=None):
-        call = self.get_object(); call.status = Call.Status.ENDED; call.ended_at = timezone.now(); call.save(); return Response(CallSerializer(call, context={'request': request}).data)
+        call = self.get_object()
+        if call.status not in (Call.Status.RINGING, Call.Status.ACCEPTED):
+            raise ValidationError({'detail': 'This call has already ended.'})
+        call.status = Call.Status.ENDED; call.ended_at = timezone.now(); call.save(update_fields=['status', 'ended_at']); return Response(CallSerializer(call, context={'request': request}).data)
 
 
 class GameViewSet(viewsets.ModelViewSet):
@@ -302,11 +366,17 @@ class GameViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         group = get_object_or_404(Group, pk=request.data.get('group'))
         if not (group.owner_id == request.user.id or group.members.filter(user=request.user, role=GroupMember.Role.ADMIN).exists()): return Response({'detail': 'Group admin permission required.'}, status=status.HTTP_403_FORBIDDEN)
-        game = BookGame.objects.create(group=group, book_id=request.data.get('book'), started_by=request.user)
+        book = get_object_or_404(Book, pk=request.data.get('book'))
+        game = BookGame.objects.create(group=group, book=book, started_by=request.user)
         return Response(self.get_serializer(game, context={'request': request}).data, status=status.HTTP_201_CREATED)
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
-        game = self.get_object(); game.status = BookGame.Status.ACTIVE; game.started_at = timezone.now(); game.save()
+        game = self.get_object()
+        if game.started_by_id != request.user.id and game.group.owner_id != request.user.id and not game.group.members.filter(user=request.user, role=GroupMember.Role.ADMIN).exists():
+            raise PermissionDenied('Group admin permission required.')
+        if game.status != BookGame.Status.WAITING:
+            raise ValidationError({'detail': 'Only a waiting game can be started.'})
+        game.status = BookGame.Status.ACTIVE; game.started_at = timezone.now(); game.save(update_fields=['status', 'started_at'])
         GameParticipant.objects.get_or_create(game=game, user=request.user)
         return Response(self.get_serializer(game, context={'request': request}).data)
     @action(detail=True, methods=['get'])
@@ -314,7 +384,13 @@ class GameViewSet(viewsets.ModelViewSet):
         game = self.get_object(); return Response([{'id': q.id, 'question': q.question, 'options': {'A': q.option_a, 'B': q.option_b, 'C': q.option_c, 'D': q.option_d}, 'difficulty': q.difficulty, 'order': q.order} for q in game.questions.all().order_by('order')])
     @action(detail=True, methods=['post'])
     def answer(self, request, pk=None):
-        game = self.get_object(); participant, _ = GameParticipant.objects.get_or_create(game=game, user=request.user); question = get_object_or_404(QuizQuestion, game=game, pk=request.data.get('question_id')); selected = request.data.get('selected_option', '').upper(); answer, _ = QuizAnswer.objects.update_or_create(question=question, participant=participant, defaults={'selected_option': selected, 'is_correct': selected == question.correct_option}); participant.correct_answers = participant.answers.filter(is_correct=True).count(); participant.score = participant.correct_answers; participant.save(); return Response({'correct': answer.is_correct, 'score': participant.score})
+        game = self.get_object()
+        if game.status != BookGame.Status.ACTIVE:
+            raise ValidationError({'detail': 'The game is not active.'})
+        selected = str(request.data.get('selected_option', '')).upper()
+        if selected not in {'A', 'B', 'C', 'D'}:
+            raise ValidationError({'selected_option': 'Select A, B, C, or D.'})
+        participant, _ = GameParticipant.objects.get_or_create(game=game, user=request.user); question = get_object_or_404(QuizQuestion, game=game, pk=request.data.get('question_id')); answer, _ = QuizAnswer.objects.update_or_create(question=question, participant=participant, defaults={'selected_option': selected, 'is_correct': selected == question.correct_option}); participant.correct_answers = participant.answers.filter(is_correct=True).count(); participant.score = participant.correct_answers; participant.save(update_fields=['correct_answers', 'score']); return Response({'correct': answer.is_correct, 'score': participant.score})
     @action(detail=True, methods=['get'])
     def result(self, request, pk=None):
         game = self.get_object(); return Response(GameParticipantSerializer(game.participants.order_by('-score', 'time_seconds'), many=True, context={'request': request}).data)
@@ -396,16 +472,37 @@ def csrf_status(request): get_token(request); return Response({'authenticated': 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def register(request):
-    serializer = RegistrationSerializer(data=request.data); serializer.is_valid(raise_exception=True); user = serializer.save()
-    try: send_code(user, EmailVerificationCode, 'Digital Archive – email verification', 'Your verification code is: {code}\nThis code expires in 10 minutes.')
-    except Exception as exc: user.delete(); return Response({'detail': f'Email could not be sent: {exc}'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    serializer = RegistrationSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    try:
+        with transaction.atomic():
+            user = serializer.save()
+    except IntegrityError as exc:
+        raise ValidationError({'detail': 'Username, email, or phone is already in use.'}) from exc
+    if not settings.REQUIRE_EMAIL_VERIFICATION:
+        profile, _ = Profile.objects.get_or_create(user=user)
+        profile.is_verified = True
+        profile.save(update_fields=['is_verified'])
+        login(request, user)
+        return Response({
+            'verification_required': False,
+            **UserSerializer(user, context={'request': request}).data,
+            **tokens_for(user),
+        }, status=status.HTTP_201_CREATED)
+    try:
+        send_code(user, EmailVerificationCode, 'Digital Archive - email verification', 'Your verification code is: {code}\nThis code expires in 10 minutes.')
+    except Exception:
+        user.delete()
+        return Response({'detail': 'Email could not be sent. Please try again later.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
     return Response({'verification_required': True, 'email': user.email}, status=status.HTTP_201_CREATED)
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def verify_email(request):
-    user = User.objects.filter(email__iexact=request.data.get('email', '').strip()).first(); code = request.data.get('code', '').strip(); verification = EmailVerificationCode.objects.filter(user=user, code=code).first() if user else None
+    email = str(request.data.get('email') or '').strip()
+    code = str(request.data.get('code') or '').strip()
+    user = User.objects.filter(email__iexact=email).first(); verification = EmailVerificationCode.objects.filter(user=user, code=code).first() if user else None
     if not verification or not verification.is_valid: return Response({'detail': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
     profile, _ = Profile.objects.get_or_create(user=user); profile.is_verified = True; profile.save(); EmailVerificationCode.objects.filter(user=user).delete(); login(request, user)
     return Response({**UserSerializer(user, context={'request': request}).data, **tokens_for(user)})
@@ -414,19 +511,26 @@ def verify_email(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_view(request):
-    identity = request.data.get('username') or request.data.get('email') or ''; user = authenticate(request, username=identity, password=request.data.get('password', ''))
+    identity = str(request.data.get('username') or request.data.get('email') or '').strip(); user = authenticate(request, username=identity, password=request.data.get('password', ''))
     if not user and '@' in identity:
         found = User.objects.filter(email__iexact=identity).first(); user = authenticate(request, username=found.username, password=request.data.get('password', '')) if found else None
     if not user: return Response({'detail': 'Login or password is incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+    profile, _ = Profile.objects.get_or_create(user=user)
+    has_pending_verification = EmailVerificationCode.objects.filter(user=user).exists()
+    if settings.REQUIRE_EMAIL_VERIFICATION and has_pending_verification and not profile.is_verified:
+        return Response({'detail': 'Verify your email before signing in.', 'verification_required': True, 'email': user.email}, status=status.HTTP_403_FORBIDDEN)
+    if not settings.REQUIRE_EMAIL_VERIFICATION and not profile.is_verified:
+        profile.is_verified = True
+        profile.save(update_fields=['is_verified'])
     login(request, user); return Response({**UserSerializer(user, context={'request': request}).data, **tokens_for(user)})
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def forgot_password(request):
-    user = User.objects.filter(email__iexact=request.data.get('email', '').strip()).first()
+    user = User.objects.filter(email__iexact=str(request.data.get('email') or '').strip(), is_active=True).first()
     if user:
-        try: send_code(user, PasswordResetCode, 'Digital Archive – password reset', 'Your password reset code is: {code}\nThis code expires in 10 minutes.')
+        try: send_code(user, PasswordResetCode, 'Digital Archive - password reset', 'Your password reset code is: {code}\nThis code expires in 10 minutes.')
         except Exception: return Response({'detail': 'Email could not be sent.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
     return Response({'detail': 'If this email exists, a reset code was sent.'})
 
@@ -434,7 +538,9 @@ def forgot_password(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def verify_reset_code(request):
-    user = User.objects.filter(email__iexact=request.data.get('email', '').strip()).first(); code = request.data.get('code', '').strip(); reset = PasswordResetCode.objects.filter(user=user, code=code).first() if user else None
+    email = str(request.data.get('email') or '').strip()
+    code = str(request.data.get('code') or '').strip()
+    user = User.objects.filter(email__iexact=email).first(); reset = PasswordResetCode.objects.filter(user=user, code=code).first() if user else None
     if not reset or not reset.is_valid: return Response({'detail': 'Invalid or expired reset code.'}, status=status.HTTP_400_BAD_REQUEST)
     return Response({'valid': True})
 
@@ -442,10 +548,19 @@ def verify_reset_code(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def reset_password(request):
-    user = User.objects.filter(email__iexact=request.data.get('email', '').strip()).first(); code = request.data.get('code', '').strip(); password = request.data.get('new_password', ''); confirm = request.data.get('confirm_password', password); reset = PasswordResetCode.objects.filter(user=user, code=code).first() if user else None
+    email = str(request.data.get('email') or '').strip()
+    code = str(request.data.get('code') or '').strip()
+    password = str(request.data.get('new_password') or '')
+    confirm = str(request.data.get('confirm_password', password) or '')
+    user = User.objects.filter(email__iexact=email).first(); reset = PasswordResetCode.objects.filter(user=user, code=code).first() if user else None
     if not reset or not reset.is_valid: return Response({'detail': 'Invalid or expired reset code.'}, status=status.HTTP_400_BAD_REQUEST)
-    if len(password) < 8 or password != confirm: return Response({'detail': 'Passwords must match and contain at least 8 characters.'}, status=status.HTTP_400_BAD_REQUEST)
-    user.set_password(password); user.save(); PasswordResetCode.objects.filter(user=user).delete(); send_mail('Digital Archive – password changed', 'Your password was changed successfully.', None, [user.email], fail_silently=True); return Response({'detail': 'Password reset successfully.'})
+    if password != confirm:
+        return Response({'detail': 'Passwords do not match.'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        validate_password(password, user=user)
+    except DjangoValidationError as exc:
+        return Response({'password': list(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+    user.set_password(password); user.save(update_fields=['password']); PasswordResetCode.objects.filter(user=user).delete(); send_mail('Digital Archive - password changed', 'Your password was changed successfully.', None, [user.email], fail_silently=True); return Response({'detail': 'Password reset successfully.'})
 
 
 @api_view(['POST'])

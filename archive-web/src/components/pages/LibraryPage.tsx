@@ -5,7 +5,7 @@ import { BookCard } from '../shared/BookCard';
 import { SectionHeader } from '../shared/SectionHeader';
 import { EmptyState } from '../shared/EmptyState';
 import { Icon } from '../shared/Icon';
-import { bookCategory } from '../shared/constants';
+import { bookCategory, bookKey } from '../shared/constants';
 
 interface Props {
   books: any[];
@@ -57,7 +57,7 @@ export function LibraryPage({ books, query, setQuery, genre, setGenre, onOpen, s
       <SectionHeader eyebrow={`${sorted.length} records available`} title="All books" />
       <div className="book-grid">
         {sorted.map((book, index) => (
-          <BookCard key={book.id || book.title || index} book={book} index={index} onOpen={onOpen} saved={saved.has(book.id || book.title)} onToggleSaved={onToggleSaved} />
+          <BookCard key={bookKey(book, index)} book={book} index={index} onOpen={onOpen} saved={saved.has(bookKey(book, index))} onToggleSaved={onToggleSaved} />
         ))}
       </div>
       {!sorted.length && <EmptyState icon="search" title="No records found" text="Try another title, author or category." />}

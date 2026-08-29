@@ -3,7 +3,7 @@
 import React from 'react';
 import { Icon } from '../shared/Icon';
 import { Avatar } from '../shared/Avatar';
-import { BookAddOverlay } from '../shared/BookAddOverlay';
+import { csrfFetch, readApiResponse } from '../../lib/api';
 
 interface Props {
   user: any;
@@ -17,8 +17,6 @@ interface Props {
   onAddBook: () => void;
 }
 
-const csrf = () => decodeURIComponent(document.cookie.split('; ').find((i) => i.startsWith('csrftoken='))?.split('=')[1] || '');
-
 export function ProfilePage({ user, form, change, onSave, avatarPreview, onAvatar, message, onLogout, onAddBook }: Props) {
   const [dashboard, setDashboard] = React.useState<any>(null);
   const [dashError, setDashError] = React.useState('');
@@ -26,8 +24,7 @@ export function ProfilePage({ user, form, change, onSave, avatarPreview, onAvata
   const loadDashboard = React.useCallback(async () => {
     try {
       const res = await fetch('/api/profile/dashboard/', { credentials: 'include' });
-      if (!res.ok) throw new Error('Could not load your profile library.');
-      const data = await res.json();
+      const data = await readApiResponse(res);
       setDashboard(data);
     } catch (e: any) { setDashError(e.message); }
   }, []);
@@ -37,12 +34,16 @@ export function ProfilePage({ user, form, change, onSave, avatarPreview, onAvata
   const deleteBook = async (id: number, btn: HTMLButtonElement) => {
     if (!window.confirm('Delete this book permanently?')) return;
     btn.disabled = true;
-    const res = await fetch(`/api/books/${id}/`, { method: 'DELETE', credentials: 'include', headers: { 'X-CSRFToken': csrf() } });
-    if (!res.ok) { btn.disabled = false; alert('Could not delete this book.'); return; }
-    loadDashboard();
+    try {
+      const response = await csrfFetch(`/api/books/${id}/`, { method: 'DELETE' });
+      await readApiResponse(response);
+      await loadDashboard();
+    } catch (error: any) {
+      btn.disabled = false;
+      alert(error?.message || 'Could not delete this book.');
+    }
   };
 
-  const escapeHtml = (v = '') => String(v).replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c] as string));
   const stats = dashboard?.stats;
   const books = dashboard?.books || [];
 
@@ -106,7 +107,7 @@ export function ProfilePage({ user, form, change, onSave, avatarPreview, onAvata
             {books.length ? books.map((book: any) => (
               <article className="profile-book-card" key={book.id}>
                 <img src={book.cover_url || book.cover || ''} alt="" />
-                <div><span>{book.genre || 'Book'}</span><h3>{escapeHtml(book.title)}</h3><p>{escapeHtml(book.author)}</p><small>{book.publication_year || '—'} · {book.pages || '—'} pages</small></div>
+                <div><span>{book.genre || 'Book'}</span><h3>{book.title}</h3><p>{book.author}</p><small>{book.publication_year || '—'} · {book.pages || '—'} pages</small></div>
                 <button type="button" className="profile-delete-book" data-book-id={book.id} onClick={(e) => deleteBook(book.id, e.currentTarget)}>Delete</button>
               </article>
             )) : <div className="profile-empty-books"><b>Your shelf is empty.</b><p>Add your first PDF book and it will appear here.</p></div>}

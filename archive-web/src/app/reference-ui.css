@@ -38,7 +38,7 @@
 @media(min-width:681px){
   body::before{filter:blur(30px);opacity:.7;animation-duration:42s;will-change:transform}
   body::after{animation-duration:30s;will-change:transform}
-  .archive-app{background-attachment:scroll;transform:translateZ(0)}
+  .archive-app{background-attachment:scroll}
   .archive-app::after,.ambient-one,.ambient-two{animation-duration:30s;will-change:transform}
   .ambient{filter:none;opacity:.72}
   .grain{display:none}

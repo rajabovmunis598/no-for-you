@@ -14,6 +14,8 @@ interface Book {
   category?: string;
   category_name?: string;
   year?: number | string;
+  publication_year?: number | string;
+  published_year?: number | string;
 }
 
 interface BookModalProps {
@@ -50,7 +52,7 @@ export function BookModal({ book, saved, onToggleSaved, onClose, onStartReading 
           </button>
           <img src={book.cover_url || book.cover || '/static/images/book-cover-fallback.svg'} alt={`Cover of ${book.title}`} />
           <div>
-            <span className="eyebrow">{book.category || book.category_name || 'Archive'} · {book.year || 'Archive edition'}</span>
+            <span className="eyebrow">{book.category_name || book.category || 'Archive'} · {book.publication_year || book.published_year || book.year || 'Archive edition'}</span>
             <h2>{book.title}</h2>
             <p className="book-modal-author">by {book.author || 'Digital Archive'}</p>
             <p className="book-modal-copy">A carefully preserved record from the Digital Archive. Add it to your shelf and return whenever the moment is right.</p>

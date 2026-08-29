@@ -1,4 +1,6 @@
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import (
@@ -43,6 +45,15 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('This email is already in use.')
         return value.strip().lower()
 
+    def validate_username(self, value):
+        value = value.strip()
+        queryset = User.objects.filter(username__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError('This username is already in use.')
+        return value
+
     def validate_phone(self, value):
         phone = value.strip() or None
         queryset = Profile.objects.filter(phone=phone) if phone else Profile.objects.none()
@@ -76,6 +87,10 @@ class RegistrationSerializer(serializers.Serializer):
     def validate(self, attrs):
         if attrs.get('confirm_password') and attrs['password'] != attrs['confirm_password']:
             raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+        attrs['username'] = attrs['username'].strip()
+        attrs['email'] = attrs['email'].strip().lower()
+        if not attrs['username']:
+            raise serializers.ValidationError({'username': 'Username is required.'})
         if User.objects.filter(username__iexact=attrs['username']).exists():
             raise serializers.ValidationError({'username': 'This username is already in use.'})
         if User.objects.filter(email__iexact=attrs['email']).exists():
@@ -85,7 +100,16 @@ class RegistrationSerializer(serializers.Serializer):
             raise serializers.ValidationError({'phone': 'Phone number is required.'})
         if Profile.objects.filter(phone=attrs['phone']).exists():
             raise serializers.ValidationError({'phone': 'This phone number is already in use.'})
-        attrs['email'] = attrs['email'].strip().lower()
+        password_user = User(
+            username=attrs['username'],
+            email=attrs['email'],
+            first_name=attrs.get('first_name', ''),
+            last_name=attrs.get('last_name', ''),
+        )
+        try:
+            validate_password(attrs['password'], user=password_user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'password': list(exc.messages)}) from exc
         attrs.pop('confirm_password', None)
         return attrs
 
@@ -142,7 +166,7 @@ class BookSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     files = BookFileSerializer(many=True, read_only=True)
     is_favorite = serializers.SerializerMethodField()
-    created_by = UserSerializer(read_only=True)
+    created_by = PublicUserSerializer(read_only=True)
 
     class Meta:
         model = Book
@@ -157,6 +181,8 @@ class BookSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         if self.instance is None:
+            if not attrs.get('isbn'):
+                attrs['isbn'] = None
             missing = [field for field in ('cover', 'book_file') if not attrs.get(field)]
             if missing:
                 raise serializers.ValidationError({field: 'This field is required when submitting a new book.' for field in missing})
@@ -167,6 +193,9 @@ class BookSerializer(serializers.ModelSerializer):
         if not filename.endswith(('.pdf', '.epub')):
             raise serializers.ValidationError('Book file must be a PDF or EPUB file.')
         return value
+
+    def validate_isbn(self, value):
+        return value.strip() or None
 
     def get_is_favorite(self, obj):
         user = self.context.get('request').user if self.context.get('request') else None
@@ -210,6 +239,13 @@ class ReadingProgressSerializer(serializers.ModelSerializer):
         fields = ['id', 'book', 'book_id', 'current_page', 'progress_percent', 'last_read_at']
         read_only_fields = ['id', 'last_read_at']
 
+    def validate(self, attrs):
+        book = attrs.get('book') or getattr(self.instance, 'book', None)
+        current_page = attrs.get('current_page', getattr(self.instance, 'current_page', 0))
+        if book and book.pages and current_page > book.pages:
+            raise serializers.ValidationError({'current_page': 'Current page exceeds the number of pages in this book.'})
+        return attrs
+
 
 class ReadingHistorySerializer(serializers.ModelSerializer):
     book = BookSerializer(read_only=True)
@@ -240,6 +276,11 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = ['id', 'chat', 'sender', 'text', 'file', 'voice', 'reply_to', 'is_read', 'is_deleted', 'edited_at', 'created_at']
         read_only_fields = ['id', 'chat', 'sender', 'is_read', 'is_deleted', 'edited_at', 'created_at']
 
+    def validate(self, attrs):
+        if not attrs.get('text', '').strip() and not attrs.get('file') and not attrs.get('voice'):
+            raise serializers.ValidationError('A message must contain text, a file, or a voice recording.')
+        return attrs
+
 
 class ChatSerializer(serializers.ModelSerializer):
     members = ChatMemberSerializer(many=True, read_only=True)
@@ -268,6 +309,11 @@ class GroupMessageSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['sender', 'group']
 
+    def validate(self, attrs):
+        if not attrs.get('text', '').strip() and not attrs.get('file') and not attrs.get('voice'):
+            raise serializers.ValidationError('A message must contain text, a file, or a voice recording.')
+        return attrs
+
 
 class GroupSerializer(serializers.ModelSerializer):
     owner = UserSerializer(read_only=True)
@@ -287,12 +333,21 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class CallSerializer(serializers.ModelSerializer):
-    caller = UserSerializer(read_only=True)
-    receiver = UserSerializer(read_only=True)
+    caller = PublicUserSerializer(read_only=True)
+    receiver = PublicUserSerializer(read_only=True)
+    receiver_id = serializers.PrimaryKeyRelatedField(
+        source='receiver', queryset=User.objects.filter(is_active=True), write_only=True,
+    )
     class Meta:
         model = Call
-        fields = '__all__'
-        read_only_fields = ['caller', 'started_at', 'ended_at', 'created_at']
+        fields = ['id', 'caller', 'receiver', 'receiver_id', 'call_type', 'status', 'started_at', 'ended_at', 'created_at']
+        read_only_fields = ['id', 'caller', 'receiver', 'status', 'started_at', 'ended_at', 'created_at']
+
+    def validate_receiver_id(self, value):
+        request = self.context.get('request')
+        if request and value == request.user:
+            raise serializers.ValidationError('You cannot call yourself.')
+        return value
 
 
 class QuizQuestionSerializer(serializers.ModelSerializer):

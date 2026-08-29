@@ -19,7 +19,8 @@ import { SettingsPage } from '../components/pages/SettingsPage';
 import { ProfilePage } from '../components/pages/ProfilePage';
 import { SiteFooter } from '../components/shared/SiteFooter';
 import dynamic from 'next/dynamic';
-import { bookKey } from '../components/shared/constants';
+import { bookCategory, bookKey } from '../components/shared/constants';
+import { csrfFetch, ensureCsrfToken, readApiResponse } from '../lib/api';
 
 const RandomPicker = dynamic(() => import('../components/pages/RandomPicker').then((m) => m.RandomPicker), { ssr: false });
 const LibraryGamesPage = dynamic(() => import('../components/pages/LibraryGamesPage').then((m) => m.LibraryGamesPage), { ssr: false });
@@ -35,10 +36,11 @@ copy.en.games = 'Games'; copy.ru.games = 'Игры'; copy.tj.games = 'Бозиҳ
 
 const navItems = [['home', 'home'], ['library', 'library'], ['random', 'sparkles'], ['games', 'game'], ['categories', 'grid'], ['favorites', 'bookmark'], ['history', 'clock'], ['groups', 'users'], ['messages', 'message'], ['notifications', 'bell'], ['settings', 'settings']];
 
-const csrf = () => decodeURIComponent(document.cookie.split('; ').find((i) => i.startsWith('csrftoken='))?.split('=')[1] || '');
-
 export default function ClientApp() {
   const [books, setBooks] = React.useState<any[]>([]);
+  const [booksLoading, setBooksLoading] = React.useState(true);
+  const [booksError, setBooksError] = React.useState('');
+  const [booksRevision, setBooksRevision] = React.useState(0);
   const [query, setQuery] = React.useState('');
   const [genre, setGenre] = React.useState('');
   const [activePage, setActivePage] = React.useState('home');
@@ -61,6 +63,7 @@ export default function ClientApp() {
   const [motionEnabled, setMotionEnabled] = React.useState(() => (typeof localStorage !== 'undefined' ? localStorage.getItem('archive-motion') !== 'off' : true));
   const [readerBook, setReaderBook] = React.useState<any>(null);
   const [bookAddOpen, setBookAddOpen] = React.useState(false);
+  const [authSubmitting, setAuthSubmitting] = React.useState(false);
 
   const t = copy[language];
   // Render only records returned by the API; demo records must never appear in production.
@@ -70,58 +73,147 @@ export default function ClientApp() {
   React.useEffect(() => { document.documentElement.dataset.motion = motionEnabled ? 'on' : 'off'; localStorage.setItem('archive-motion', motionEnabled ? 'on' : 'off'); }, [motionEnabled]);
   React.useEffect(() => {
     const ctrl = new AbortController();
-    const params = new URLSearchParams();
-    if (query) params.set('search', query);
-    if (genre) params.set('genre', genre);
-    fetch(`/api/books/?${params}`, { signal: ctrl.signal, credentials: 'include' }).then((r) => r.ok ? r.json() : []).then((d) => { const res = d.results || d; if (Array.isArray(res) && res.length) setBooks(res); }).catch(() => {});
+    setBooksLoading(true);
+    setBooksError('');
+    fetch('/api/books/', { signal: ctrl.signal, credentials: 'include', headers: { Accept: 'application/json' } })
+      .then(readApiResponse)
+      .then((data) => {
+        const records = Array.isArray(data) ? data : data?.results;
+        setBooks(Array.isArray(records) ? records : []);
+      })
+      .catch((error) => {
+        if (error?.name !== 'AbortError') {
+          setBooks([]);
+          setBooksError(error?.message || 'The library could not be loaded.');
+        }
+      })
+      .finally(() => { if (!ctrl.signal.aborted) setBooksLoading(false); });
     return () => ctrl.abort();
-  }, [query, genre]);
-  React.useEffect(() => { fetch('/api/auth/profile/', { credentials: 'include' }).then((r) => r.ok ? r.json() : null).then((d) => { if (d) { setUser(d); setForm((v) => ({ ...v, ...d, password: '' })); } }).catch(() => {}); }, []);
-  React.useEffect(() => { fetch('/api/auth/status/', { credentials: 'include' }).catch(() => {}); }, []);
+  }, [booksRevision]);
+  React.useEffect(() => {
+    ensureCsrfToken().catch(() => {});
+    fetch('/api/auth/profile/', { credentials: 'include', headers: { Accept: 'application/json' } })
+      .then((response) => response.ok ? readApiResponse(response) : null)
+      .then((data) => {
+        if (data) {
+          setUser(data);
+          setForm((value) => ({ ...value, ...data, password: '' }));
+        }
+      })
+      .catch(() => {});
+  }, []);
+  React.useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    Promise.allSettled([
+      fetch('/api/favorites/', { credentials: 'include', headers: { Accept: 'application/json' } }).then(readApiResponse),
+      fetch('/api/reading/history/', { credentials: 'include', headers: { Accept: 'application/json' } }).then(readApiResponse),
+    ]).then(([favoritesResult, historyResult]) => {
+      if (cancelled) return;
+      const favoritesData = favoritesResult.status === 'fulfilled' ? favoritesResult.value : [];
+      const historyData = historyResult.status === 'fulfilled' ? historyResult.value : [];
+      const favorites = Array.isArray(favoritesData) ? favoritesData : favoritesData?.results || [];
+      const readingHistory = Array.isArray(historyData) ? historyData : historyData?.results || [];
+      setSaved(new Set(favorites.map((item: any) => bookKey(item.book)).filter(Boolean)));
+      setHistory(readingHistory.map((item: any) => item.book).filter(Boolean));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [user]);
 
   const change = (field: string) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((v) => ({ ...v, [field]: e.target.value }));
   const openAuth = (mode: 'login' | 'register' = 'login') => { setAuthMode(mode); setVerificationStep(false); setVerificationCode(''); setMessage(''); setModal('auth'); };
   const requireAuth = (cb?: () => void) => { if (!user) { openAuth(); return; } cb?.(); };
-  const navigate = (page: string) => { if (page !== 'home' && !user) { openAuth(); return; } setActivePage(page); setModal(null); window.scrollTo({ top: 0, behavior: 'smooth' }); };
-  const selectGenre = (c: string) => requireAuth(() => { setGenre(c); setActivePage('library'); });
-  const openBook = (b: any) => requireAuth(() => { setSelectedBook(b); setHistory((items) => [b, ...items.filter((i) => bookKey(i) !== bookKey(b))].slice(0, 8)); });
-  const toggleSaved = (b: any) => requireAuth(() => setSaved((items) => { const next = new Set(items); const key = bookKey(b); next.has(key) ? next.delete(key) : next.add(key); return next; }));
+  const navigate = (page: string) => {
+    const publicPages = new Set(['home', 'library', 'random', 'categories']);
+    if (!user && !publicPages.has(page)) { openAuth(); return; }
+    setActivePage(page); setModal(null); window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const selectGenre = (category: string) => { setGenre(category); setActivePage('library'); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  const openBook = (book: any) => setSelectedBook(book);
+  const toggleSaved = (book: any) => requireAuth(() => {
+    const key = bookKey(book);
+    const wasSaved = saved.has(key);
+    setSaved((items) => {
+      const next = new Set(items);
+      wasSaved ? next.delete(key) : next.add(key);
+      return next;
+    });
+    (async () => {
+      try {
+        if (!book?.id) throw new Error('This book cannot be saved.');
+        const response = await csrfFetch(`/api/books/${book.id}/favorite/`, { method: wasSaved ? 'DELETE' : 'POST' });
+        await readApiResponse(response);
+      } catch (error: any) {
+        setSaved((items) => {
+          const next = new Set(items);
+          wasSaved ? next.add(key) : next.delete(key);
+          return next;
+        });
+        setMessage(error?.message || 'The saved books list could not be updated.');
+      }
+    })();
+  });
   const selectAvatar = (e: React.ChangeEvent<HTMLInputElement>) => { const f = e.target.files?.[0]; if (!f) return; setAvatarFile(f); setAvatarPreview(URL.createObjectURL(f)); };
   const saveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     const body = new FormData();
     ['email', 'first_name', 'last_name', 'phone', 'bio'].forEach((k) => body.append(k, form[k] || ''));
     if (avatarFile) body.append('avatar', avatarFile);
-    try { const r = await fetch('/api/auth/profile/', { method: 'PATCH', credentials: 'include', headers: { 'X-CSRFToken': csrf() }, body }); const d = await r.json(); if (!r.ok) throw new Error(d.detail || 'Could not save your profile.'); setUser(d); setAvatarPreview(d.avatar_url || ''); setAvatarFile(null); setMessage('Profile updated successfully.'); } catch (e: any) { setMessage(e.message); }
+    try {
+      const response = await csrfFetch('/api/auth/profile/', { method: 'PATCH', body });
+      const data = await readApiResponse(response);
+      setUser(data); setAvatarPreview(data.avatar_url || ''); setAvatarFile(null); setMessage('Profile updated successfully.');
+    } catch (error: any) { setMessage(error?.message || 'Could not save your profile.'); }
   };
   const submitAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     const endpoint = verificationStep ? 'verify-email' : authMode === 'login' ? 'login' : 'register';
     const body = verificationStep ? { email: form.email, code: verificationCode } : form;
+    setAuthSubmitting(true);
+    setMessage('');
     try {
-      const r = await fetch(`/api/auth/${endpoint}/`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() }, body: JSON.stringify(body) });
-      const raw = await r.text();
-      let d: any = {};
-      try { d = raw ? JSON.parse(raw) : {}; } catch { throw new Error(`Server error (${r.status}). Please try again.`); }
-      if (!r.ok) throw new Error(d.detail || Object.values(d).flat().join(' '));
+      const response = await csrfFetch(`/api/auth/${endpoint}/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await readApiResponse(response);
       if (d.verification_required) { setVerificationStep(true); setMessage(''); return; }
       setUser(d); setForm((v) => ({ ...v, ...d, password: '' })); setModal(null); setVerificationStep(false);
-    } catch (e: any) { setMessage(e.message || 'Something went wrong.'); }
+    } catch (error: any) { setMessage(error?.message || 'Something went wrong.'); }
+    finally { setAuthSubmitting(false); }
   };
-  const logout = async () => { try { await fetch('/api/auth/logout/', { method: 'POST', credentials: 'include', headers: { 'X-CSRFToken': csrf() } }); } finally { setUser(null); setActivePage('home'); setModal(null); setSaved(new Set()); setHistory([]); } };
+  const logout = async () => {
+    try { const response = await csrfFetch('/api/auth/logout/', { method: 'POST' }); await readApiResponse(response); }
+    finally { setUser(null); setActivePage('home'); setModal(null); setSaved(new Set()); setHistory([]); }
+  };
+
+  const startReading = (book: any) => {
+    if (!user) { setSelectedBook(null); openAuth(); return; }
+    setReaderBook(book);
+  };
+  const updateReadingProgress = React.useCallback(async (book: any, currentPage: number, totalPages: number) => {
+    if (!user || !book?.id || !totalPages) return;
+    const progressPercent = Math.min(100, Math.max(0, Math.round((currentPage / totalPages) * 100)));
+    try {
+      const response = await csrfFetch('/api/reading/progress/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ book_id: book.id, current_page: currentPage, progress_percent: progressPercent }),
+      });
+      await readApiResponse(response);
+      setHistory((items) => [book, ...items.filter((item) => bookKey(item) !== bookKey(book))]);
+    } catch { /* Reading remains available even if progress sync is temporarily unavailable. */ }
+  }, [user]);
 
   const filteredBooks = catalogue.filter((b) => {
-    const val = `${b.title || ''} ${b.author || ''} ${(b.category || b.category_name) || ''}`.toLowerCase();
-    return val.includes(query.toLowerCase()) && (!genre || (b.category || b.category_name) === genre);
+    const val = `${b.title || ''} ${b.author || ''} ${bookCategory(b)}`.toLowerCase();
+    return val.includes(query.toLowerCase()) && (!genre || bookCategory(b) === genre);
   });
   const pageTitles: Record<string, string> = { home: t.home, library: t.library, random: t.random, games: t.games, categories: t.categories, favorites: t.favorites, history: t.history, groups: t.groups, messages: t.messages, notifications: t.notifications, settings: t.settings, profile: t.profile };
 
   let page = null;
-  if (activePage === 'home') page = <HomePage books={catalogue} carouselIndex={carouselIndex} setCarouselIndex={setCarouselIndex} onOpen={openBook} onExplore={() => navigate('library')} saved={saved} onToggleSaved={toggleSaved} t={t} user={user} />;
+  if (activePage === 'home') page = <HomePage books={catalogue} loading={booksLoading} error={booksError} carouselIndex={carouselIndex} setCarouselIndex={setCarouselIndex} onOpen={openBook} onExplore={() => navigate('library')} saved={saved} onToggleSaved={toggleSaved} t={t} user={user} />;
   if (activePage === 'library') page = <LibraryPage books={filteredBooks} query={query} setQuery={setQuery} genre={genre} setGenre={setGenre} onOpen={openBook} saved={saved} onToggleSaved={toggleSaved} t={t} />;
   if (activePage === 'random') page = <RandomPicker books={catalogue} onOpen={openBook} />;
   if (activePage === 'games') page = <LibraryGamesPage language={language} />;
-  if (activePage === 'categories') page = <CategoriesPage onCategory={selectGenre} />;
+  if (activePage === 'categories') page = <CategoriesPage books={catalogue} onCategory={selectGenre} />;
   if (activePage === 'favorites') page = <SavedPage books={catalogue} saved={saved} onOpen={openBook} onToggleSaved={toggleSaved} />;
   if (activePage === 'history') page = <HistoryPage history={history} onOpen={openBook} />;
   if (activePage === 'groups') page = <GroupsPage onCreate={() => setMessage('Circle creation will be available soon.')} />;
@@ -168,15 +260,16 @@ export default function ClientApp() {
             {user ? <button className="top-avatar" onClick={() => navigate('profile')}><Avatar user={user} /></button> : <button className="login-button" onClick={() => openAuth()}>{t.signIn}</button>}
           </div>
         </header>
+        <div className="mobile-page-label"><span className="eyebrow">Digital archive</span><b>{pageTitles[activePage]}</b></div>
         <AnimatePresence mode="wait">
-          <div key={activePage}>{page}</div>
+          <div className="page-shell" key={activePage}>{page}</div>
         </AnimatePresence>
+        <SiteFooter />
       </section>
-      <SiteFooter />
-      {modal === 'auth' && <AuthModal mode={authMode} setMode={setAuthMode} verificationStep={verificationStep} code={verificationCode} setCode={setVerificationCode} form={form} change={change} message={message} onClose={() => setModal(null)} onSubmit={submitAuth} t={t} />}
-      {selectedBook && <BookModal book={selectedBook} saved={saved.has(bookKey(selectedBook))} onToggleSaved={toggleSaved} onClose={() => setSelectedBook(null)} onStartReading={(b) => setReaderBook(b)} />}
-      {readerBook && <PdfReader book={readerBook} onClose={() => setReaderBook(null)} />}
-      {bookAddOpen && <BookAddOverlay open={bookAddOpen} onClose={() => setBookAddOpen(false)} />}
+      {modal === 'auth' && <AuthModal mode={authMode} setMode={setAuthMode} verificationStep={verificationStep} code={verificationCode} setCode={setVerificationCode} form={form} change={change} message={message} submitting={authSubmitting} onClose={() => setModal(null)} onSubmit={submitAuth} t={t} />}
+      {selectedBook && <BookModal book={selectedBook} saved={saved.has(bookKey(selectedBook))} onToggleSaved={toggleSaved} onClose={() => setSelectedBook(null)} onStartReading={startReading} />}
+      {readerBook && <PdfReader book={readerBook} onClose={() => setReaderBook(null)} onProgress={updateReadingProgress} />}
+      {bookAddOpen && <BookAddOverlay open={bookAddOpen} onClose={() => setBookAddOpen(false)} onAdded={() => setBooksRevision((value) => value + 1)} />}
     </main>
   );
 }

@@ -10,8 +10,8 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
-from pathlib import Path
 import os
+from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -29,11 +29,15 @@ if ENV_FILE.exists():
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-cu9u+b(%9e-gr&j8&j9(^#u1$%8=f120jkyg9!p8ss)#wcb62!'
-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'true').lower() == 'true'
+
+# Production must override this value. The fallback is intentionally limited to
+# local development so the repository never contains the deployment secret.
+SECRET_KEY = os.environ.get(
+    'SECRET_KEY',
+    'dev-only-secret-key-change-me-9c6d72b6f1e84b9aa6546c4041d5b0e8',
+)
 
 ALLOWED_HOSTS = [
     host.strip()
@@ -60,7 +64,6 @@ INSTALLED_APPS = [
 ]
 
 
-EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND') or ('django.core.mail.backends.smtp.EmailBackend' if os.environ.get('EMAIL_HOST_USER') else 'django.core.mail.backends.console.EmailBackend')
 EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
 EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'true').lower() == 'true'
@@ -68,6 +71,25 @@ EMAIL_USE_SSL = os.environ.get('EMAIL_USE_SSL', 'false').lower() == 'true'
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '').replace(' ', '')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER or 'webmaster@localhost')
+_EMAIL_BACKEND_OVERRIDE = os.environ.get('EMAIL_BACKEND', '').strip()
+_SMTP_CONFIGURED = bool(EMAIL_HOST_USER and EMAIL_HOST_PASSWORD)
+EMAIL_BACKEND = _EMAIL_BACKEND_OVERRIDE or (
+    'django.core.mail.backends.smtp.EmailBackend'
+    if _SMTP_CONFIGURED
+    else 'django.core.mail.backends.console.EmailBackend'
+)
+_EMAIL_DELIVERY_BACKENDS = {
+    'django.core.mail.backends.console.EmailBackend',
+    'django.core.mail.backends.dummy.EmailBackend',
+    'django.core.mail.backends.locmem.EmailBackend',
+}
+_EMAIL_DELIVERY_CONFIGURED = _SMTP_CONFIGURED or bool(
+    _EMAIL_BACKEND_OVERRIDE and _EMAIL_BACKEND_OVERRIDE not in _EMAIL_DELIVERY_BACKENDS
+)
+REQUIRE_EMAIL_VERIFICATION = os.environ.get(
+    'REQUIRE_EMAIL_VERIFICATION',
+    'true' if _EMAIL_DELIVERY_CONFIGURED else 'false',
+).lower() == 'true'
 
 # Gemini stays server-side so the browser never receives the private API key.
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
@@ -151,7 +173,7 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 STATICFILES_DIRS = [BASE_DIR / 'static']
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
@@ -181,6 +203,26 @@ SPECTACULAR_SETTINGS = {
 
 CORS_ALLOWED_ORIGINS = [value for value in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',') if value]
 CORS_ALLOW_CREDENTIALS = True
+
+# Nginx/Cloudflare terminate HTTPS before proxying to Daphne. These settings
+# keep generated media URLs and secure cookies correct behind that proxy.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', str(not DEBUG)).lower() == 'true'
+CSRF_COOKIE_SECURE = os.environ.get('CSRF_COOKIE_SECURE', str(not DEBUG)).lower() == 'true'
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+CSRF_TRUSTED_ORIGINS = [
+    value.strip()
+    for value in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
+    if value.strip()
+]
+CSRF_FAILURE_VIEW = 'myapp.views.csrf_failure'
+SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'false').lower() == 'true'
+SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', '0'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_PRELOAD = SECURE_HSTS_SECONDS > 0
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'same-origin'
 
 REDIS_URL = os.environ.get('REDIS_URL', '')
 CHANNEL_LAYERS = {
