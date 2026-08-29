@@ -17,6 +17,7 @@ import { MessagesPage } from '../components/pages/MessagesPage';
 import { NotificationsPage } from '../components/pages/NotificationsPage';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import { ProfilePage } from '../components/pages/ProfilePage';
+import { SiteFooter } from '../components/shared/SiteFooter';
 import dynamic from 'next/dynamic';
 import { bookKey } from '../components/shared/constants';
 
@@ -171,6 +172,7 @@ export default function ClientApp() {
           <div key={activePage}>{page}</div>
         </AnimatePresence>
       </section>
+      <SiteFooter />
       {modal === 'auth' && <AuthModal mode={authMode} setMode={setAuthMode} verificationStep={verificationStep} code={verificationCode} setCode={setVerificationCode} form={form} change={change} message={message} onClose={() => setModal(null)} onSubmit={submitAuth} t={t} />}
       {selectedBook && <BookModal book={selectedBook} saved={saved.has(bookKey(selectedBook))} onToggleSaved={toggleSaved} onClose={() => setSelectedBook(null)} onStartReading={(b) => setReaderBook(b)} />}
       {readerBook && <PdfReader book={readerBook} onClose={() => setReaderBook(null)} />}

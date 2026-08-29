@@ -69,7 +69,7 @@ export function HomePage({ books, carouselIndex, setCarouselIndex, onOpen, onExp
       <section>
         <SectionHeader eyebrow="Curated for you" title={t.featured} action={t.browse} onAction={onExplore} />
         <div className="book-grid book-grid-featured">
-          {(books.length ? books : demoBooks).slice(0, 4).map((book, index) => (
+          {(books.length ? books : demoBooks).slice(0, 20).map((book, index) => (
             <BookCard key={book.id || book.title || index} book={book} index={index} onOpen={onOpen} saved={saved.has(book.id || book.title)} onToggleSaved={onToggleSaved} compact />
           ))}
         </div>
